@@ -62,7 +62,7 @@ const addGraphQLAuthRequirement = async (context, authType): Promise<$TSAny> =>
  * Query Amplify Meta file and check if Auth is configured
  * @returns true if Auth is configured else false
  */
-export const checkIfAuthExists = (): boolean => {
+const checkIfAuthExists = (): boolean => {
   const amplifyMeta = getProjectMeta();
   let authExists = false;
   const authServiceName = 'Cognito';
