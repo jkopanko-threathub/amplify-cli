@@ -1,7 +1,7 @@
 import { $TSContext, stateManager, pathManager, AmplifyError } from '@aws-amplify/amplify-cli-core';
 import { mocked } from 'ts-jest/utils';
 import * as path from 'path';
-import { getEnvParamManager } from '@aws-amplify/amplify-environment-parameters';
+import { getEnvParamManager, ensureEnvParamManager } from '@aws-amplify/amplify-environment-parameters';
 import { FunctionSecretsStateManager } from '../../../../provider-utils/awscloudformation/secrets/functionSecretsStateManager';
 import * as stateManagerModule from '../../../../provider-utils/awscloudformation/secrets/functionSecretsStateManager';
 import { getAppId, getFunctionSecretPrefix } from '../../../../provider-utils/awscloudformation/secrets/secretName';
@@ -29,6 +29,8 @@ stateManagerMock.getLocalEnvInfo.mockReturnValue({
 });
 stateManagerMock.getTeamProviderInfo.mockReturnValue({});
 
+stateManagerMock.setTeamProviderInfo.mockReturnValue();
+
 pathManagerMock.getBackendDirPath.mockReturnValue(path.join('test', 'path'));
 
 getAppIdMock.mockReturnValue('testAppId');
@@ -43,6 +45,7 @@ SSMClientWrapperMock.getInstance.mockResolvedValue({
 
 const getLocalFunctionSecretNamesSpy = jest.spyOn(stateManagerModule, 'getLocalFunctionSecretNames');
 
+const invokePluginMethodMock = jest.fn();
 const contextStub = {
   parameters: {
     command: 'update',
@@ -51,6 +54,9 @@ const contextStub = {
     options: {
       yes: true,
     },
+  },
+  amplify: {
+    invokePluginMethod: invokePluginMethodMock,
   },
 } as unknown as $TSContext;
 let functionSecretsStateManager: FunctionSecretsStateManager;
@@ -75,10 +81,40 @@ describe('syncSecretDeltas', () => {
   });
 });
 
-describe('ensureNewLocalSecretsSyncedToCloud', () => {
-  it('throws AmplifyError if secrets are missing and not in interactive mode', async () => {
+describe('ensureNewLocalSecretsSyncedToCloud in non interactive mode', () => {
+  it('doesnt throws AmplifyError if function secret is PS and secretsPathAmplifyAppId is defined', async () => {
+    // set secrets in
+    invokePluginMethodMock.mockResolvedValue((key: string) => true);
+    const funcName = 'testFunc';
+    (await ensureEnvParamManager('testTest')).instance
+      .getResourceParamManager('function', funcName)
+      .setParam('secretsPathAmplifyAppId', 'existingParamValue');
+    const secretPrefix = 'testPrefix';
+    getFunctionSecretPrefixMock.mockReturnValue(secretPrefix);
+    getLocalFunctionSecretNamesSpy.mockReturnValue(['secret1', 'secret2']);
+    getSecretNamesByPathMock.mockResolvedValue(['secret2'].map((sec) => `${secretPrefix}${sec}`));
+
+    await expect(functionSecretsStateManager.ensureNewLocalSecretsSyncedToCloud(funcName)).toMatchInlineSnapshot(`Promise {}`);
+  });
+
+  it('throws AmplifyError if secrets value are missing in parameter store', async () => {
+    const secretPrefix = 'testPrefix';
+    const funcName = 'testFunc';
+    (await ensureEnvParamManager('testTest')).instance
+      .getResourceParamManager('function', funcName)
+      .setParam('secretsPathAmplifyAppId', 'existingParamValue');
+    invokePluginMethodMock.mockResolvedValue((key: string) => false);
+    getFunctionSecretPrefixMock.mockReturnValue(secretPrefix);
+    getLocalFunctionSecretNamesSpy.mockReturnValue(['secret1', 'secret2']);
+    getSecretNamesByPathMock.mockResolvedValue(['secret2'].map((sec) => `${secretPrefix}${sec}`));
+
+    await expect(functionSecretsStateManager.ensureNewLocalSecretsSyncedToCloud(funcName)).rejects.toStrictEqual(amplifyErrorMockImpl);
+  });
+
+  it('throws AmplifyError if secrets key not set in envParamsManager', async () => {
     const funcName = 'testFunc';
     const secretPrefix = 'testPrefix';
+    (await ensureEnvParamManager('testTest')).instance.getResourceParamManager('function', funcName).deleteParam('secretsPathAmplifyAppId');
     getFunctionSecretPrefixMock.mockReturnValue(secretPrefix);
     getLocalFunctionSecretNamesSpy.mockReturnValue(['secret1', 'secret2']);
     getSecretNamesByPathMock.mockResolvedValue(['secret2'].map((sec) => `${secretPrefix}${sec}`));
