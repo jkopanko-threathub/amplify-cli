@@ -86,8 +86,11 @@ const execHelper = async (
       }),
       stripFinalNewline: false,
     });
+    printer.info('execa created')
     childProcess?.stdout?.pipe(process.stdout);
+    printer.info('stdout piped')
     const childProcessResult = await childProcess;
+    printer.info('child process result')
     if (!childProcessResult?.stdout?.endsWith(EOL)) {
       printer.blankLine();
     }
