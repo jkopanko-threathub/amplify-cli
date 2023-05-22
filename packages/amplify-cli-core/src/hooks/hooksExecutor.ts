@@ -2,8 +2,9 @@ import * as which from 'which';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import execa from 'execa';
+import _ from 'lodash';
 import { EOL } from 'os';
-import { printer } from '@aws-amplify/amplify-prompts';
+import { printer } from 'amplify-prompts';
 import { getLogger } from '../logger/index';
 import { HooksMeta } from './hooksMeta';
 import { skipHooks } from './skipHooks';
@@ -11,17 +12,12 @@ import { defaultSupportedExt, hookFileSeparator } from './hooksConstants';
 import { HooksConfig, HookExtensions, HookFileMeta, HookEvent, DataParameter, ErrorParameter } from './hooksTypes';
 import { pathManager, stateManager } from '../state-manager';
 
-const logger = getLogger('@aws-amplify/amplify-cli-core', 'hooks/hooksExecutioner.ts');
-
-/**
- *  runtime for hooks
- */
-type HooksRuntime = { runtimePath: string; runtimeOptions?: string[] };
+const logger = getLogger('amplify-cli-core', 'hooks/hooksExecutioner.ts');
 
 /**
  * execute hooks present in the hooks directory
  */
-export const executeHooks = async (hooksMetadata: HooksMeta): Promise<void> => {
+export const executeHooks = async (hooksMeta: HooksMeta): Promise<void> => {
   if (skipHooks()) {
     return;
   }
@@ -34,30 +30,32 @@ export const executeHooks = async (hooksMetadata: HooksMeta): Promise<void> => {
 
   const hooksConfig: HooksConfig = stateManager.getHooksConfigJson(projectPath) ?? {};
 
-  if (hooksMetadata.getHookEvent().forcePush) {
-    // we want to run push related hooks when forcePush flag is enabled
-    hooksMetadata.setEventCommand('push');
-    hooksMetadata.setEventSubCommand(undefined);
-  }
-
-  const { commandHookFileMeta, subCommandHookFileMeta } = getHookFileMetadata(hooksDirPath, hooksMetadata.getHookEvent(), hooksConfig);
+  const { commandHookFileMeta, subCommandHookFileMeta } = getHookFileMetas(hooksDirPath, hooksMeta.getHookEvent(), hooksConfig);
 
   const executionQueue = [commandHookFileMeta, subCommandHookFileMeta];
+
+  if (hooksMeta.getHookEvent().forcePush) {
+    // we want to run push related hooks when forcePush flag is enabled
+    hooksMeta.setEventCommand('push');
+    hooksMeta.setEventSubCommand(undefined);
+    const { commandHookFileMeta } = getHookFileMetas(hooksDirPath, hooksMeta.getHookEvent(), hooksConfig);
+    executionQueue.push(commandHookFileMeta);
+  }
 
   for (const execFileMeta of executionQueue) {
     if (!execFileMeta) {
       continue;
     }
-    const hooksRuntime = getRuntime(execFileMeta, hooksConfig);
-    if (!hooksRuntime?.runtimePath) {
+    const runtime = getRuntime(execFileMeta, hooksConfig);
+    if (!runtime) {
       continue;
     }
-    await execHelper(hooksRuntime, execFileMeta, hooksMetadata.getDataParameter(), hooksMetadata.getErrorParameter());
+    await execHelper(runtime, execFileMeta, hooksMeta.getDataParameter(), hooksMeta.getErrorParameter());
   }
 };
 
 const execHelper = async (
-  hooksRuntime: HooksRuntime,
+  runtime: string,
   execFileMeta: HookFileMeta,
   dataParameter: DataParameter,
   errorParameter?: ErrorParameter,
@@ -75,10 +73,11 @@ const execHelper = async (
   printer.info(`----- 🪝 ${execFileMeta.baseName} execution start -----`);
 
   try {
-    logger.info(`hooks file: ${execFileMeta.fileName} execution started`);
-    // adding default if options aren't defined
-    const runtimeArgs = (hooksRuntime.runtimeOptions ?? []).concat([execFileMeta.filePath]);
-    const childProcess = execa(hooksRuntime.runtimePath, runtimeArgs, {
+    printer.info(`hooks file: ${execFileMeta.fileName} execution started`);
+    printer.info(JSON.stringify({ data: dataParameter, error: errorParameter }));
+    printer.info(JSON.stringify({ cwd: projectRoot, PATH: process.env.PATH }));
+    printer.info(JSON.stringify({ runtime, filePath: execFileMeta.filePath }));
+    const childProcess = execa(runtime, [execFileMeta.filePath], {
       cwd: projectRoot,
       env: { PATH: process.env.PATH },
       input: JSON.stringify({
@@ -92,9 +91,9 @@ const execHelper = async (
     if (!childProcessResult?.stdout?.endsWith(EOL)) {
       printer.blankLine();
     }
-    logger.info(`hooks file: ${execFileMeta.fileName} execution ended`);
+    printer.info(`hooks file: ${execFileMeta.fileName} execution ended`);
   } catch (err) {
-    logger.info(`hooks file: ${execFileMeta.fileName} execution error - ${JSON.stringify(err)}`);
+    printer.info(`hooks file: ${execFileMeta.fileName} execution error - ${JSON.stringify(err)}`);
     if (err?.stderr?.length > 0) {
       printer.error(err.stderr);
     }
@@ -106,14 +105,15 @@ const execHelper = async (
     printer.error('exiting Amplify process...');
     printer.blankLine();
     logger.error('hook script exited with error', err);
-    // exit code is 76 indicating Amplify exited because user hook script exited with a non-zero status
+    // exit code is 76 indicating Amplify exited because user hook script exited with a non zero status
+    await new Promise(resolve => setTimeout(resolve, 5000));
     process.exit(76);
   }
   printer.info(`----- 🪝 ${execFileMeta.baseName} execution end -----`);
   printer.blankLine();
 };
 
-const getHookFileMetadata = (
+const getHookFileMetas = (
   hooksDirPath: string,
   hookEvent: HookEvent,
   hooksConfig: HooksConfig,
@@ -125,13 +125,13 @@ const getHookFileMetadata = (
 
   const allFiles = fs
     .readdirSync(hooksDirPath)
-    .filter((relFilePath) => fs.lstatSync(path.join(hooksDirPath, relFilePath)).isFile())
-    .map((relFilePath) => splitFileName(relFilePath))
-    .filter((fileMeta) => fileMeta.extension && Object.prototype.hasOwnProperty.call(extensionsSupported, fileMeta.extension))
-    .map((fileMeta) => ({ ...fileMeta, filePath: path.join(hooksDirPath, String(fileMeta.fileName)) }));
+    .filter(relFilePath => fs.lstatSync(path.join(hooksDirPath, relFilePath)).isFile())
+    .map(relFilePath => splitFileName(relFilePath))
+    .filter(fileMeta => fileMeta.extension && Object.prototype.hasOwnProperty.call(extensionsSupported, fileMeta.extension))
+    .map(fileMeta => ({ ...fileMeta, filePath: path.join(hooksDirPath, String(fileMeta.fileName)) }));
 
   const commandType = hookEvent.eventPrefix ? [hookEvent.eventPrefix, hookEvent.command].join(hookFileSeparator) : hookEvent.command;
-  const commandHooksFiles = allFiles.filter((fileMeta) => fileMeta.baseName === commandType);
+  const commandHooksFiles = allFiles.filter(fileMeta => fileMeta.baseName === commandType);
   const commandHookFileMeta = throwOnDuplicateHooksFiles(commandHooksFiles);
 
   let subCommandHooksFiles;
@@ -141,7 +141,7 @@ const getHookFileMetadata = (
       ? [hookEvent.eventPrefix, hookEvent.command, hookEvent.subCommand].join(hookFileSeparator)
       : [hookEvent.command, hookEvent.subCommand].join(hookFileSeparator);
 
-    subCommandHooksFiles = allFiles.filter((fileMeta) => fileMeta.baseName === subCommandType);
+    subCommandHooksFiles = allFiles.filter(fileMeta => fileMeta.baseName === subCommandType);
     subCommandHookFileMeta = throwOnDuplicateHooksFiles(subCommandHooksFiles);
   }
   return { commandHookFileMeta, subCommandHookFileMeta };
@@ -149,7 +149,7 @@ const getHookFileMetadata = (
 
 const throwOnDuplicateHooksFiles = (files: HookFileMeta[]): HookFileMeta | undefined => {
   if (files.length > 1) {
-    throw new Error(`found duplicate hook scripts: ${files.map((file) => file.fileName).join(', ')}`);
+    throw new Error(`found duplicate hook scripts: ${files.map(file => file.fileName).join(', ')}`);
   } else if (files.length === 1) {
     return files[0];
   }
@@ -166,7 +166,7 @@ const splitFileName = (filename: string): HookFileMeta => {
   return fileMeta;
 };
 
-const getRuntime = (fileMeta: HookFileMeta, hooksConfig: HooksConfig): HooksRuntime | undefined => {
+const getRuntime = (fileMeta: HookFileMeta, hooksConfig: HooksConfig): string | undefined => {
   const { extension } = fileMeta;
   if (!extension) {
     return undefined;
@@ -187,16 +187,8 @@ const getRuntime = (fileMeta: HookFileMeta, hooksConfig: HooksConfig): HooksRunt
   if (!executablePath) {
     throw new Error(String(`hooks runtime not found: ${runtime}`));
   }
-  const hooksRuntime: HooksRuntime = {
-    runtimePath: executablePath,
-  };
-  // check runtime options
-  const runtimeOptions = extensionObj?.[extension]?.runtime_options;
-  if (Array.isArray(runtimeOptions) && runtimeOptions.length > 0) {
-    hooksRuntime.runtimeOptions = extensionObj?.[extension]?.runtime_options;
-  }
 
-  return hooksRuntime;
+  return executablePath;
 };
 
 const getSupportedExtensions = (hooksConfig: HooksConfig): HookExtensions => ({ ...defaultSupportedExt, ...hooksConfig?.extensions });
